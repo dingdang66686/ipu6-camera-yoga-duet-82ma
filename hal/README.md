@@ -21,6 +21,7 @@
 | 内核 | `7.2.4-1-cachyos`（**clang/LLD 构建** → 内核模块必须 `make LLVM=1`） |
 | HAL 包 | `intel-ipu6-camera-hal-git r130.6fefa86-1`（拥有 `/etc/camera/ipu6`） |
 | GStreamer 插件 | `icamerasrc-git`（分支 `icamerasrc_slim_api`，HEAD `7517af7`） |
+| PipeWire 插件（可选） | `icamera-spa`（独立仓库，MIT，见 §7.1） |
 
 ### 摄像头对应关系（官方确认）
 OV5678 = **前置**（屏内，IR+RGB hybrid）｜GC5035 = **后置**（背板，普通 RGB）。
@@ -218,6 +219,32 @@ git apply /path/to/patches/icamerasrc-ov5678.diff
 
 > 本项为**可选**：它不是当前单彩/双彩出流的必要条件，仅在需要独立 IR pad 时使用。
 
+### 7.1 相关路径：`icamera-spa`（PipeWire SPA 插件）
+
+除了 GStreamer 的 `icamerasrc`，本栈还有一条**可选的原生 PipeWire 消费路径**，
+维护在**独立仓库**中：<https://github.com/dingdang66686/icamera-spa>（MIT）。
+
+- 它是一个 PipeWire **SPA source 节点**（`api.icamera.source`），通过
+  `camhal_backend.cpp` 直接调用与 `icamerasrc` **同一套 `libcamhal`**，
+  绕过 GStreamer 与 v4l2loopback，把前后摄直接呈现在 PipeWire 图中。
+- **因此它天然复用本目录部署的 `/etc/camera/ipu6` 配置与 `.aiqb`**（§4 全部改动），
+  以及仓库根 `../drivers/` 安装的内核模块（含 `intel-ipu6-psys`）。
+- 它还会用 WirePlumber Lua monitor 自动发现内置相机（排除 USB/UVC），并支持
+  在 streaming 中通过 `pw-cli` 动态调整 3A（曝光/增益/AWB）。
+
+```bash
+git clone https://github.com/dingdang66686/icamera-spa.git
+cd icamera-spa && make all
+sudo make install            # → /usr/lib/spa-0.2/icamera/libspa-icamera.so
+sudo make install-monitor    # WirePlumber monitor + Lua 模块 + 51-icamera.conf
+systemctl --user restart wireplumber
+pw-cli ls Node | grep icamera
+```
+
+> ⚠️ 它的 `51-icamera.conf` 默认会禁用 v4l2 / libcamera 相机 monitor。两条路径
+> （`icamerasrc` 与 `icamera-spa`）可共存；如果桌面只想看到 icamera 源就用默认，
+> 否则需编辑该 conf 去掉禁用项。
+
 ---
 
 ## 8. `scripts/`
@@ -260,6 +287,8 @@ git apply /path/to/patches/icamerasrc-ov5678.diff
 - **不要 SIGKILL gst**（见 §5 警告）。
 - 包管理器升级 `intel-ipu6-camera-hal-git` 会**覆盖 `/etc/camera/ipu6`** —— 升级后用
   `./deploy.sh` 重新部署本仓库配置。
+- **两条消费路径共用同一套配置**：`icamerasrc`（GStreamer）与 `icamera-spa`
+  （PipeWire，见 §7.1）都读 `/etc/camera/ipu6`，改配置对两者同时生效。
 
 ---
 

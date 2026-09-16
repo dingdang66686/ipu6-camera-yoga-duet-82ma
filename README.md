@@ -30,6 +30,9 @@
 │  icamerasrc (GStreamer 插件，专有栈入口)          ← AUR 包     │
 │      · patches/icamerasrc-ov5678.diff 提供 IR pad 支持        │
 ├─────────────────────────────────────────────────────────────┤
+│  icamera-spa (PipeWire SPA 插件，可选替代路径) ← 独立仓库      │
+│      · 直接对接 libcamhal，绕过 GStreamer / v4l2loopback      │
+├─────────────────────────────────────────────────────────────┤
 │  libcamhal (专有 IPU6 HAL)                      ← AUR 包     │
 │      · 运行时配置 /etc/camera/ipu6/**            ← hal/ 部署  │
 ├─────────────────────────────────────────────────────────────┤
@@ -47,6 +50,10 @@
 
 本仓库负责其中的 **`drivers/` 与 `hal/`** 两层；`libcamhal` / `icamerasrc` 是
 发行版（AUR）组件，本仓库提供其**配置**与**可选补丁**。
+
+`icamera-spa` 是本栈的**可选用户态消费路径**（PipeWire 原生插件），维护在
+**独立仓库**中，但直接复用本仓库部署的 `libcamhal` 与 `/etc/camera/ipu6` 配置,
+详见文末「[相关项目：icamera-spa](#相关项目icamera-spa-pipewire-spa-插件)」。
 
 ---
 
@@ -155,6 +162,47 @@ in-tree 的 `ov5675` 驱动不能直接用于 OV5678（PLL/VTS 值不同，且 A
 
 ---
 
+## 相关项目：icamera-spa（PipeWire SPA 插件）
+
+`icamera-spa` 是本栈的**可选用户态消费路径**，维护在**独立仓库**：
+
+> <https://github.com/dingdang66686/icamera-spa>（MIT）
+
+它是一个**原生 PipeWire SPA source 节点**，直接从 `libcamhal` 拉取 NV12 帧，
+**完全绕过 GStreamer (`icamerasrc`) 与 v4l2loopback**，把前后摄以 PipeWire
+`Video/Source` 节点呈现给桌面应用（Camera、视频会议、xdg-desktop-portal 等），
+并支持在 streaming 中通过 `pw-cli` 动态修改 3A（曝光/增益/AWB）。
+
+### 与本仓库的关系
+
+- **不替代本仓库，而是复用本仓库的两层成果**：
+  - 依赖 `drivers/` 安装的内核驱动（含 `intel-ipu6-psys`）；
+  - 复用 `hal/` 部署的 `/etc/camera/ipu6` 配置与 `.aiqb`（libcamhal 直接读取）。
+- 二者是 **libcamhal 的两个并列消费者**：`icamerasrc`（GStreamer）与
+  `icamera-spa`（PipeWire），可同时安装、互不冲突。
+- 本仓库**不包含**其源码；`hal/` 中仅提供它同样会用到的 HAL 配置与调校数据。
+
+### 安装与使用（简）
+
+```bash
+# 1) 先完成本仓库的 drivers/ 与 hal/ 部署（见上文「快速开始」）
+
+# 2) 构建并安装 SPA 插件 + WirePlumber 集成
+git clone https://github.com/dingdang66686/icamera-spa.git
+cd icamera-spa && make all
+sudo make install            # → /usr/lib/spa-0.2/icamera/libspa-icamera.so
+sudo make install-monitor    # WirePlumber monitor + Lua 模块 + 51-icamera.conf
+systemctl --user restart wireplumber
+
+# 3) 验证节点
+pw-cli ls Node | grep icamera
+```
+
+> ⚠️ 其 `51-icamera.conf` 默认会**禁用 v4l2 与 libcamera 相机 monitor**，让桌面只
+> 看到 icamera 源。若系统还有依赖 v4l2/libcamera 的应用，请编辑该文件去掉禁用项。
+
+---
+
 ## 已知注意事项
 
 1. **`/etc/modprobe.d` 的 softdep 可能过时**：本机曾存在
@@ -176,3 +224,4 @@ in-tree 的 `ov5675` 驱动不能直接用于 OV5678（PLL/VTS 值不同，且 A
 - `hal/configs/` 中的 XML / `.aiqb` — Intel 相机 HAL 运行时配置，随
   `intel-ipu6-camera-hal` / `intel-ipu6-camera-bin` 分发。
 - `hal/scripts/`、`deploy.sh`、`install.sh` — 本仓库原创，**MIT**。
+- `icamera-spa` — 独立项目，**MIT**（见文末「相关项目」）。
