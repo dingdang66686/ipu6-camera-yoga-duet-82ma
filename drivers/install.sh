@@ -106,8 +106,11 @@ cmd_install() {
     echo "==> dkms install 到 /lib/modules/${KVER}/updates/dkms"
     dkms install -m "${PKG_NAME}" -v "${PKG_VERSION}" -k "${KVER}" --force
     echo "==> 已安装。下一步："
-    echo "    1) 重建 initramfs:  sudo mkinitcpio -P"
-    echo "    2) 重启系统"
+    echo "    1) 重建 initramfs（按引导器选择）："
+    echo "         GRUB/systemd-boot:  sudo mkinitcpio -P"
+    echo "         Limine:             sudo limine-mkinitcpio   # 注意: mkinitcpio -P 在 Limine 上不会更新启动项"
+    echo "       （相机模块不在 initramfs 内、由 udev 运行时加载，此步可选但推荐）"
+    echo "    2) 重启系统（IPU6 模块无法安全热重载，必须重启）"
     echo "    3) 验证: sudo bash $0 verify"
 }
 
