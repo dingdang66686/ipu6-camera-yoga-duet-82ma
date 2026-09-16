@@ -1,0 +1,398 @@
+--- a/gc5035.c
++++ b/gc5035.c
+@@ -17,6 +17,7 @@
+ #include <linux/version.h>
+ #include <media/media-entity.h>
+ #include <media/v4l2-async.h>
++#include <media/v4l2-common.h>
+ #include <media/v4l2-ctrls.h>
+ #include <media/v4l2-fwnode.h>
+ #include <media/v4l2-subdev.h>
+@@ -140,24 +141,18 @@
+ #define GC5035_DD_DELAY_US				(10 * 1000)
+ #define GC5035_DD_TIMEOUT_US				(100 * 1000)
+ 
+-/* The clock source index in INT3472 CLDB */
+-#define INT3472_CLDB_CLKSRC_INDEX 	14
+-
+-/*
+- * 82c0d13a-78c5-4244-9bb1-eb8b539a8d11
+- * This _DSM GUID calls CLKC and CLKF.
+- */
+-static const guid_t clock_ctrl_guid =
+-	GUID_INIT(0x82c0d13a, 0x78c5, 0x4244,
+-		  0x9b, 0xb1, 0xeb, 0x8b, 0x53, 0x9a, 0x8d, 0x11);
+-
+ static const char * const gc5035_supplies[] = {
+ 	/*
+-	 * Requested separately due to power sequencing needs:
+-	 * "iovdd",	 * Power supply for I/O circuits *
++	 * The int3472 GPIO regulator driver (clk_and_regulator.c) rejects
++	 * supply names of 6 characters or longer, so the upstream "dvdd12"
++	 * and "avdd21" names cannot be registered on ACPI/INT3472 systems.
++	 * Use the shorter con_ids int3472 maps this sensor's rails to
++	 * instead: the handshake pin as "dvdd", the DVDD/IO pin as "dovdd"
++	 * and the power-enable pin as "avdd".
+ 	 */
+-	"dvdd12",	/* Digital core power */
+-	"avdd21",	/* Analog power */
++	"dovdd",	/* Digital I/O power */
++	"dvdd",		/* Digital core power */
++	"avdd",		/* Analog power */
+ };
+ 
+ struct gc5035_regval {
+@@ -193,8 +188,6 @@
+ 
+ 
+ struct gc5035_power_ctrl {
+-	/* Control Logic ACPI device */
+-	struct acpi_device *ctrl_logic;
+ 	/* GPIO for reset */
+ 	struct gpio_desc *reset_gpio;
+ 	/* GPIO for power enable */
+@@ -203,8 +196,6 @@
+ 	struct gpio_desc *pled_gpio;
+ 
+ 	int status;
+-	/* Clock source index */
+-	u8 clk_source_index;
+ };
+ 
+ struct gc5035 {
+@@ -213,7 +204,6 @@
+ 	unsigned long mclk_rate;
+ 	//struct gpio_desc *resetb_gpio;
+ 	///struct gpio_desc *pwdn_gpio;
+-	struct regulator *iovdd_supply;
+ 	struct regulator_bulk_data supplies[ARRAY_SIZE(gc5035_supplies)];
+ 
+ 	struct v4l2_subdev subdev;
+@@ -794,8 +784,7 @@
+ /*
+  * Xclk 24Mhz
+  * Pclk 87.6Mhz
+- * linelength 672{0x2a0)
+- * framelength 2232{0x8b8)
++ * linelength 1460{0x5b4)  (reg 0x05/0x06 = 0x02DA, X2 per datasheet)
+  * grabwindow_width 1280
+  * grabwindow_height 720
+  * max_framerate 30fps
+@@ -928,7 +917,9 @@
+ 		.max_fps = 30,
+ 		.exp_def = 0x258,
+ 		.hts_def = 1460,
+-		.vts_def = 2008,
++		/* Binning mode reads the full 1960-row array, so the
++		 * datasheet minimum frame length is win_height + 36 = 1996. */
++		.vts_def = 1996,
+ 		.reg_list = gc5035_1296x972_regs,
+ 		.num_regs = ARRAY_SIZE(gc5035_1296x972_regs),
+ 	},
+@@ -937,7 +928,8 @@
+ 		.height = 720,
+ 		.max_fps = 60,
+ 		.exp_def = 0x258,
+-		.hts_def = 1896,
++		.hts_def = 1460,
++		/* This mode is specified for 60 fps, which vts 1536 provides. */
+ 		.vts_def = 1536,
+ 		.reg_list = gc5035_1280x720_regs,
+ 		.num_regs = ARRAY_SIZE(gc5035_1280x720_regs),
+@@ -969,7 +961,7 @@
+ 	struct gpio_desc* gpio;
+ 	int ret;
+ 
+-	gpio = devm_gpiod_get(dev, name, GPIOD_OUT_HIGH);
++	gpio = devm_gpiod_get_optional(dev, name, GPIOD_OUT_HIGH);
+ 	ret = PTR_ERR_OR_ZERO(gpio);
+ 	if (ret < 0) {
+ 		gpio = NULL;
+@@ -981,77 +973,8 @@
+ 
+ static void gc5035_init_power_ctrl(struct gc5035 *gc5035)
+ {
+-	struct gc5035_power_ctrl* power = &gc5035->power;
+-	acpi_handle handle = ACPI_HANDLE(&gc5035->client->dev);
+-	struct acpi_handle_list dep_devices;
+-	acpi_status status;
+-	int i = 0;
+-	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+-	union acpi_object *obj;
+-
+-	power->ctrl_logic = NULL;
+-	if (!acpi_has_method(handle, "_DEP"))
+-		return;
+-
+-	/* Call _DEP method of OV13B */
+-	status = acpi_evaluate_reference(handle, "_DEP", NULL, &dep_devices);
+-	if (ACPI_FAILURE(status)) {
+-		acpi_handle_debug(handle, "Failed to evaluate _DEP.\n");
+-		return;
+-	}
+-
+-	/* Find INT3472 in _DEP */
+-	for (i = 0; i < dep_devices.count; i++) {
+-		struct acpi_device *dep_device = NULL;
+-		const char* dep_hid = NULL;
+-
+-		if (dep_devices.handles[i]) {
+-		#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
+-			acpi_bus_get_device(dep_devices.handles[i], &dep_device);
+-		#else
+-			dep_device = acpi_fetch_acpi_dev(dep_devices.handles[i]);
+-		#endif
+-		}
+-		if (dep_device)
+-			dep_hid = acpi_device_hid(dep_device);
+-		if (dep_hid && strcmp("INT3472", dep_hid) == 0) {
+-			power->ctrl_logic = dep_device;
+-			break;
+-		}
+-	}
+-
+-	/* If we got INT3472 acpi device, read which clock source we'll use */
+-	if (power->ctrl_logic == NULL)
+-		return;
+-	status = acpi_evaluate_object(power->ctrl_logic->handle,
+-				      "CLDB", NULL, &buffer);
+-	if (ACPI_FAILURE(status)) {
+-		dev_warn(&gc5035->client->dev, "Read INT3472 CLDB failed");
+-		return;
+-	}
+-
+-	obj = buffer.pointer;
+-	if (!obj)
+-		dev_warn(&gc5035->client->dev, "INT3472 CLDB return NULL");
+-	if (obj->type != ACPI_TYPE_BUFFER) {
+-		acpi_handle_err(power->ctrl_logic->handle,
+-				"CLDB object is not an ACPI buffer\n");
+-		kfree(obj);
+-		return;
+-	}
+-	if (obj->buffer.length < INT3472_CLDB_CLKSRC_INDEX + 1) {
+-		acpi_handle_err(power->ctrl_logic->handle,
+-				"The CLDB buffer size is wrong\n");
+-		kfree(obj);
+-		return;
+-	}
++	struct gc5035_power_ctrl *power = &gc5035->power;
+ 
+-	/* Get the clock source index */
+-	gc5035->power.clk_source_index =
+-		obj->buffer.pointer[INT3472_CLDB_CLKSRC_INDEX];
+-	kfree(obj);
+-
+-	/* Get gpios mapped by INT3472 driver */
+ 	power->reset_gpio = gc5035_get_gpio(gc5035, "reset");
+ 	power->pwren_gpio = gc5035_get_gpio(gc5035, "pwren");
+ 	power->pled_gpio = gc5035_get_gpio(gc5035, "pled");
+@@ -1060,44 +983,47 @@
+ 
+ static void gc5035_set_power(struct gc5035 *gc5035, int on)
+ {
+-	struct gc5035_power_ctrl* power = &gc5035->power;
++	struct gc5035_power_ctrl *power = &gc5035->power;
+ 
+ 	on = (on ? 1 : 0);
+ 	if (on == power->status)
+ 		return;
+ 
+-	/* First, set reset pin as low */
+-	if (power->reset_gpio) {
+-		gpiod_set_value_cansleep(power->reset_gpio, 0);
+-		msleep(5);
+-	}
+-
+-	/* Use _DSM of INT3472 to enable clock */
+-	if (power->ctrl_logic) {
+-		u8 clock_args[] = { power->clk_source_index, on, 0x01,};
+-		union acpi_object clock_ctrl_args = {
+-			.buffer = {
+-				.type = ACPI_TYPE_BUFFER,
+-				.length = 3,
+-				.pointer = clock_args,
+-			},
+-		};
+-		acpi_evaluate_dsm(power->ctrl_logic->handle,
+-				  &clock_ctrl_guid, 0x00, 0x01,
+-				  &clock_ctrl_args);
+-	}
+-
+-	/* Set power pin and privacy LED pin */
+-	if (power->pwren_gpio)
+-		gpiod_set_value_cansleep(power->pwren_gpio, on);
+-	if (power->pled_gpio)
+-		gpiod_set_value_cansleep(power->pled_gpio, on);
+-
+-	/* If we need to power on, set reset pin to high at last */
+-	if (on && power->reset_gpio) {
+-		gpiod_set_value_cansleep(power->reset_gpio, 1);
+-		msleep(5);
++	if (on) {
++		/* Bring up the DVDD/AVDD rails, then enable the sensor clock
++		 * and finally release reset once power is stable. */
++		if (regulator_bulk_enable(ARRAY_SIZE(gc5035_supplies),
++					  gc5035->supplies))
++			dev_err(&gc5035->client->dev,
++				"failed to enable supplies\n");
++
++		if (gc5035->mclk)
++			clk_prepare_enable(gc5035->mclk);
++
++		/* Reset is GPIO_ACTIVE_LOW, so a logical 0 deasserts it and
++		 * lets the sensor come out of reset and answer on I2C. */
++		if (power->reset_gpio)
++			gpiod_set_value_cansleep(power->reset_gpio, 0);
++
++		if (power->pwren_gpio)
++			gpiod_set_value_cansleep(power->pwren_gpio, 1);
++		if (power->pled_gpio)
++			gpiod_set_value_cansleep(power->pled_gpio, 1);
++	} else {
++		if (power->reset_gpio)
++			gpiod_set_value_cansleep(power->reset_gpio, 1);
++		if (power->pwren_gpio)
++			gpiod_set_value_cansleep(power->pwren_gpio, 0);
++		if (power->pled_gpio)
++			gpiod_set_value_cansleep(power->pled_gpio, 0);
++
++		if (gc5035->mclk)
++			clk_disable_unprepare(gc5035->mclk);
++
++		regulator_bulk_disable(ARRAY_SIZE(gc5035_supplies),
++				       gc5035->supplies);
+ 	}
++
+ 	power->status = on;
+ }
+ 
+@@ -1475,6 +1401,30 @@
+ 	return ret;
+ }
+ 
++static int gc5035_get_selection(struct v4l2_subdev *sd,
++				struct v4l2_subdev_state *sd_state,
++				struct v4l2_subdev_selection *sel)
++{
++	struct gc5035 *gc5035 = to_gc5035(sd);
++	const struct gc5035_mode *mode = gc5035->cur_mode;
++
++	/* GC5035 is a fixed-size sensor without cropping; every mode maps
++	 * the full visible pixel array. Return the full-frame rectangle for
++	 * crop bounds, default crop and active crop alike.
++	 */
++	if (sel->target != V4L2_SEL_TGT_CROP &&
++	    sel->target != V4L2_SEL_TGT_CROP_DEFAULT &&
++	    sel->target != V4L2_SEL_TGT_CROP_BOUNDS)
++		return -EINVAL;
++
++	sel->r.left = 0;
++	sel->r.top = 0;
++	sel->r.width = mode->width;
++	sel->r.height = mode->height;
++
++	return 0;
++}
++
+ static int gc5035_set_fmt(struct v4l2_subdev *sd,
+ 			  struct v4l2_subdev_state *sd_state,
+ 			  struct v4l2_subdev_format *fmt)
+@@ -1511,6 +1461,16 @@
+ 		__v4l2_ctrl_modify_range(gc5035->vblank, vblank_def,
+ 					 GC5035_VTS_MAX - mode->height,
+ 					 1, vblank_def);
++		/*
++		 * Reset the vblank control value to this mode's default.
++		 * __v4l2_ctrl_modify_range() only changes the range, not the
++		 * value, so switching from a smaller mode (e.g. 1296x972 with
++		 * vblank_def 1036) to 2592x1944 would otherwise keep a stale
++		 * vblank (1036), pushing VTS to 2980 and dropping the sensor
++		 * to ~20fps instead of the native 30fps (VTS 2008).
++		 */
++		gc5035->vblank->val = vblank_def;
++		gc5035->vblank->cur.val = vblank_def;
+ 	}
+ 	mutex_unlock(&gc5035->mutex);
+ 
+@@ -1727,6 +1687,7 @@
+ #endif
+ 	.enum_mbus_code = gc5035_enum_mbus_code,
+ 	.enum_frame_size = gc5035_enum_frame_sizes,
++	.get_selection = gc5035_get_selection,
+ 	.get_fmt = gc5035_get_fmt,
+ 	.set_fmt = gc5035_set_fmt,
+ };
+@@ -1969,6 +1930,14 @@
+ 				     ARRAY_SIZE(gc5035_test_pattern_menu) - 1,
+ 				     0, 0, gc5035_test_pattern_menu);
+ 
++	/* The GC5035 is a rear-facing sensor with no rotation; report that so
++	 * userspace applies the correct (non-mirrored) orientation policy. */
++	v4l2_ctrl_new_std_menu(handler, NULL, V4L2_CID_CAMERA_ORIENTATION,
++			       V4L2_CAMERA_ORIENTATION_BACK, 0,
++			       V4L2_CAMERA_ORIENTATION_BACK);
++	v4l2_ctrl_new_std(handler, NULL, V4L2_CID_CAMERA_SENSOR_ROTATION,
++			  0, 360, 90, 0);
++
+ 	if (handler->error) {
+ 		ret = handler->error;
+ 		dev_err(&gc5035->client->dev,
+@@ -2072,7 +2041,6 @@
+ 	struct gc5035 *gc5035;
+ 	struct v4l2_subdev *sd;
+ 	int ret, i;
+-	u32 freq = 192000000UL;
+ 
+ 	gc5035 = devm_kzalloc(dev, sizeof(*gc5035), GFP_KERNEL);
+ 	if (!gc5035)
+@@ -2080,30 +2048,31 @@
+ 
+ 	gc5035->client = client;
+ 	gc5035_init_power_ctrl(gc5035);
+-	gc5035_set_power(gc5035, 1);
+-	
+-	gc5035->cur_mode = &gc5035_modes[0];
+ 
+-	ret = clk_set_rate(gc5035->mclk, freq);
+-	if (ret < 0)
+-		return dev_err_probe(dev, ret, "Failed to set mclk rate\n");
+-	gc5035->mclk_rate = clk_get_rate(gc5035->mclk);
+-	if (gc5035->mclk_rate != freq)
+-		dev_warn(dev, "mclk rate set to %lu instead of requested %u\n",
+-			 gc5035->mclk_rate, freq);
+-	gc5035->iovdd_supply = devm_regulator_get(dev, "iovdd");
+-	if (IS_ERR(gc5035->iovdd_supply))
+-		return dev_err_probe(dev, PTR_ERR(gc5035->iovdd_supply),
+-				     "Failed to get iovdd regulator\n");
++	gc5035->cur_mode = &gc5035_modes[0];
+ 
++	/* Get the GPIO-backed DVDD/AVDD regulators registered by INT3472. */
+ 	for (i = 0; i < ARRAY_SIZE(gc5035_supplies); i++)
+ 		gc5035->supplies[i].supply = gc5035_supplies[i];
+-	ret = devm_regulator_bulk_get(&gc5035->client->dev,
+-				       ARRAY_SIZE(gc5035_supplies),
+-				       gc5035->supplies);
++	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(gc5035_supplies),
++				      gc5035->supplies);
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "Failed to get regulators\n");
+-    
++
++	/* Get the sensor clock through the clk framework. On this ACPI/INT3472
++	 * system int3472 registers a fixed-rate clock and toggles it through
++	 * its _DSM, so no rate change is needed or possible here. */
++	gc5035->mclk = devm_v4l2_sensor_clk_get(dev, NULL);
++	if (IS_ERR(gc5035->mclk)) {
++		dev_warn(dev, "Failed to get mclk: %ld\n", PTR_ERR(gc5035->mclk));
++		gc5035->mclk = NULL;
++	}
++
++	gc5035_set_power(gc5035, 1);
++
++	if (gc5035->mclk)
++		gc5035->mclk_rate = clk_get_rate(gc5035->mclk);
++
+ 	mutex_init(&gc5035->mutex);
+ 	sd = &gc5035->subdev;
+ 	v4l2_i2c_subdev_init(sd, client, &gc5035_subdev_ops);

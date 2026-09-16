@@ -1,0 +1,39 @@
+# 统一相机栈仓库的顶层忽略规则
+# 各子层（drivers/、hal/）另有自己的 .gitignore，规则会叠加生效。
+
+# 构建产物（内核模块）
+*.ko
+*.o
+*.mod
+*.mod.c
+.*.cmd
+*.symvers
+modules.order
+Module.symvers
+.tmp_versions/
+
+# 运行期 / 调试产物
+*.log
+*.ppm
+*.raw
+*.yuv
+*.png
+*.jpg
+*.bak
+*.bak.*
+*.orig
+*.rej
+*.tmp
+
+# Python
+__pycache__/
+*.pyc
+
+# 上游参照克隆（仅本地参考，不纳入仓库）
+/repo/
+/drivers/repo/
+/hal/repo/
+
+# 编辑器 / 临时
+*.swp
+*~

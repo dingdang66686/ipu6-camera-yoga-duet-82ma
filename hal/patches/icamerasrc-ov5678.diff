@@ -1,0 +1,88 @@
+diff --git a/src/gstcambasesrc.h b/src/gstcambasesrc.h
+index bf18246..f6375f0 100644
+--- a/src/gstcambasesrc.h
++++ b/src/gstcambasesrc.h
+@@ -108,6 +108,7 @@ enum
+ /* for multi-stream, this will be modified as video_%u */
+ #define GST_CAM_BASE_VIDEO_PAD_NAMES  "video_%u"
+ #define GST_CAM_BASE_STILL_PAD_NAMES  "still_%u"
++#define GST_CAM_BASE_IR_PAD_NAMES     "ir_%u"
+ 
+ typedef struct _GstCamBaseSrc GstCamBaseSrc;
+ typedef struct _GstCamBaseSrcClass GstCamBaseSrcClass;
+diff --git a/src/gstcamerasrc.cpp b/src/gstcamerasrc.cpp
+index 61683e5..99f0b1d 100644
+--- a/src/gstcamerasrc.cpp
++++ b/src/gstcamerasrc.cpp
+@@ -930,6 +930,12 @@ static GstStaticPadTemplate still_pad_template = GST_STATIC_PAD_TEMPLATE(
+   GST_PAD_REQUEST,
+   {gst_camerasrc_get_all_caps()});
+ 
++static GstStaticPadTemplate ir_pad_template = GST_STATIC_PAD_TEMPLATE(
++  GST_CAM_BASE_IR_PAD_NAMES,
++  GST_PAD_SRC,
++  GST_PAD_REQUEST,
++  {gst_camerasrc_get_all_caps()});
++
+ static void
+ gst_camerasrc_class_init (GstcamerasrcClass * klass)
+ {
+@@ -1217,6 +1223,7 @@ gst_camerasrc_class_init (GstcamerasrcClass * klass)
+ 
+   gst_element_class_add_static_pad_template(gstelement_class, &video_pad_template);
+   gst_element_class_add_static_pad_template(gstelement_class, &still_pad_template);
++  gst_element_class_add_static_pad_template(gstelement_class, &ir_pad_template);
+ 
+   basesrc_class->get_caps = GST_DEBUG_FUNCPTR(gst_camerasrc_get_caps);
+   basesrc_class->set_caps = GST_DEBUG_FUNCPTR(gst_camerasrc_set_caps);
+@@ -1427,10 +1434,11 @@ static GstPad *gst_camerasrc_request_new_pad (GstElement * element,
+   guint index = -1;
+ 
+   GST_CAMSRC_LOCK(camerasrc);
+-  /* the name of request pad must follow format: video_%u or still_%u, while %u should start from 0 */
++  /* the name of request pad must follow format: video_%u, still_%u or ir_%u, while %u should start from 0 */
+   if ((name_templ && sscanf (name_templ, "video_%u", &index) == 1)
+-      || (name_templ && sscanf (name_templ, "still_%u", &index) == 1)) {
+-    GST_INFO("CameraId=%d, current video/still pad index: %d", camerasrc->device_id, index);
++      || (name_templ && sscanf (name_templ, "still_%u", &index) == 1)
++      || (name_templ && sscanf (name_templ, "ir_%u", &index) == 1)) {
++    GST_INFO("CameraId=%d, current video/still/ir pad index: %d", camerasrc->device_id, index);
+     if (index >= GST_CAMERASRC_MAX_STREAM_NUM - 1) {
+       GST_ERROR("index: %d is larger than limit: %d", index, GST_CAMERASRC_MAX_STREAM_NUM - 1);
+       GST_CAMSRC_UNLOCK(camerasrc);
+@@ -1443,7 +1451,7 @@ static GstPad *gst_camerasrc_request_new_pad (GstElement * element,
+       return NULL;
+     }
+   } else {
+-    GST_ERROR("Invalid pad name: %s, please follow 'video_%%u' or 'still_%%u' as template to name it", name_templ);
++    GST_ERROR("Invalid pad name: %s, please follow 'video_%%u', 'still_%%u' or 'ir_%%u' as template to name it", name_templ);
+     GST_CAMSRC_UNLOCK(camerasrc);
+     return NULL;
+   }
+@@ -1455,6 +1463,8 @@ static GstPad *gst_camerasrc_request_new_pad (GstElement * element,
+     padname = g_strdup_printf ("video_%u", index);
+   } else if (name_templ && sscanf (name_templ, "still_%u", &index) == 1) {
+     padname = g_strdup_printf ("still_%u", index);
++  } else if (name_templ && sscanf (name_templ, "ir_%u", &index) == 1) {
++    padname = g_strdup_printf ("ir_%u", index);
+   }
+   /* store video pad name and stream id */
+   guint request_pad_index = index + 1;
+@@ -1471,6 +1481,8 @@ static GstPad *gst_camerasrc_request_new_pad (GstElement * element,
+ 
+   if (name_templ && sscanf (name_templ, "still_%u", &index) == 1) {
+     camerasrc->streams[request_pad_index].stream_usage = CAMERA_STREAM_STILL_CAPTURE;
++  } else if (name_templ && sscanf (name_templ, "ir_%u", &index) == 1) {
++    camerasrc->streams[request_pad_index].stream_usage = CAMERA_STREAM_IR;
+   }
+ 
+   gst_cam_base_src_set_format (GST_CAM_BASE_SRC (camerasrc), GST_FORMAT_TIME, padname);
+@@ -1481,6 +1493,8 @@ static GstPad *gst_camerasrc_request_new_pad (GstElement * element,
+     videopad = gst_pad_new_from_static_template(&video_pad_template, padname);
+   } else if (name_templ && sscanf (name_templ, "still_%u", &index) == 1) {
+     videopad = gst_pad_new_from_static_template(&still_pad_template, padname);
++  } else if (name_templ && sscanf (name_templ, "ir_%u", &index) == 1) {
++    videopad = gst_pad_new_from_static_template(&video_pad_template, padname);
+   }
+ 
+   /* call base class interface to add video pad */

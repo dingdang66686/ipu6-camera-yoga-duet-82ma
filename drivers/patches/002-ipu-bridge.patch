@@ -1,0 +1,20 @@
+--- a/ipu-bridge.c
++++ b/ipu-bridge.c
+@@ -49,6 +49,8 @@
+  * Please keep the list sorted by ACPI HID.
+  */
+ static const struct ipu_sensor_config ipu_supported_sensors[] = {
++	/* GalaxyCore GC5035 (Lenovo Yoga Duet ITL 2021 rear camera) */
++	IPU_SENSOR_CONFIG("GCTI5035", 1, 438000000),
+ 	/* Himax HM11B1 */
+ 	IPU_SENSOR_CONFIG("HIMX11B1", 1, 384000000),
+ 	/* Himax HM2170 */
+@@ -93,6 +95,8 @@
+ 	IPU_SENSOR_CONFIG("OVTI2680", 1, 331200000),
+ 	/* Omnivision OV5675 */
+ 	IPU_SENSOR_CONFIG("OVTI5675", 1, 450000000),
++	/* Omnivision OV5678 (Lenovo Yoga Duet ITL 2021 front camera; OV5675 family) */
++	IPU_SENSOR_CONFIG("OVTI5678", 1, 450000000),
+ 	/* Omnivision OV8856 */
+ 	IPU_SENSOR_CONFIG("OVTI8856", 3, 180000000, 360000000, 720000000),
+ 	/* Sony IMX471 */

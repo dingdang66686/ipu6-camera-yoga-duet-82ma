@@ -1,0 +1,33 @@
+# Build artifacts (kernel module builds)
+*.ko
+*.o
+*.mod
+*.mod.c
+.*.cmd
+..module-common.o.cmd
+modules.order
+Module.symvers
+*.symvers
+.wtest
+
+# DKMS build leftovers
+*.ko.zst
+*.ko.zst.bak-*
+dkms.conf.bak_*
+
+# editor / temp
+*.swp
+*~
+
+# Generated driver sources. scripts/prepare.sh (DKMS PRE_BUILD) reconstructs
+# these from baseline-cache/ + patches/ on every build, so they are derived
+# artefacts and must not be tracked. The per-subdir Makefiles ARE hand-written
+# and stay tracked.
+#
+# NOTE: src/psys/*.c are VENDORED (verbatim Intel ipu6-drivers sources, PSYS is
+# fully out-of-tree) and ARE tracked, so they are explicitly un-ignored below.
+/src/ov5678/*.c
+/src/gc5035/*.c
+/src/ipu_bridge/*.c
+/src/int3472/*.c
+!/src/psys/*.c

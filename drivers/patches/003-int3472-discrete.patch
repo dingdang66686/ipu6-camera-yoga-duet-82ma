@@ -1,0 +1,45 @@
+--- a/discrete.c
++++ b/discrete.c
+@@ -164,6 +164,42 @@
+ 		.con_id = "dvdd",
+ 		.enable_time_us = 45 * USEC_PER_MSEC,
+ 	},
++	/*
++	 * OV5678 and GC5035 (Lenovo Yoga Duet ITL 2021, 82MA) declare their
++	 * DVDD and AVDD rails with the non-standard types 0x0f / 0x11. Map
++	 * them to the HANDSHAKE / POWER_ENABLE types so int3472 registers them
++	 * under the "dvdd" / "avdd" names the sensor drivers request. The
++	 * DOVDD rail (0x10) and the privacy LED (0x0d) use the standard types
++	 * and are handled by int3472's default mapping.
++	 */
++	{	/* 0x0f -> dvdd */
++		.hid = "OVTI5678",
++		.type_from = 0x0f,
++		.type_to = INT3472_GPIO_TYPE_HANDSHAKE,
++		.con_id = "dvdd",
++		.enable_time_us = GPIO_REGULATOR_ENABLE_TIME,
++	},
++	{	/* 0x11 -> avdd */
++		.hid = "OVTI5678",
++		.type_from = 0x11,
++		.type_to = INT3472_GPIO_TYPE_POWER_ENABLE,
++		.con_id = "avdd",
++		.enable_time_us = GPIO_REGULATOR_ENABLE_TIME,
++	},
++	{	/* 0x0f -> dvdd */
++		.hid = "GCTI5035",
++		.type_from = 0x0f,
++		.type_to = INT3472_GPIO_TYPE_HANDSHAKE,
++		.con_id = "dvdd",
++		.enable_time_us = GPIO_REGULATOR_ENABLE_TIME,
++	},
++	{	/* 0x11 -> avdd */
++		.hid = "GCTI5035",
++		.type_from = 0x11,
++		.type_to = INT3472_GPIO_TYPE_POWER_ENABLE,
++		.con_id = "avdd",
++		.enable_time_us = GPIO_REGULATOR_ENABLE_TIME,
++	},
+ };
+ 
+ static void int3472_get_con_id_and_polarity(struct int3472_discrete_device *int3472, u8 *type,
