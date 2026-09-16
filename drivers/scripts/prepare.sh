@@ -33,10 +33,33 @@ set -u
 # --- resolve directories ---------------------------------------------------
 # DKMS runs PRE_BUILD with the working directory *above* dkms.conf's source
 # dir; prefer an explicit DKMS_BUILD_ROOT env, else fall back to realpath.
+# NOTE: under 'dkms build' this is the *per-kernel copy* at
+#   /var/lib/dkms/<pkg>/<ver>/build/
+# which dkms deletes again after 'dkms install'.  SRC_DIR and PATCHES_DIR must
+# stay rooted here (that is exactly the tree 'make' compiles from), but the
+# baseline cache must NOT - see CACHE_DIR below.
 DKMS_BUILD_ROOT="${DKMS_BUILD_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 PATCHES_DIR="$DKMS_BUILD_ROOT/patches"
 SRC_DIR="$DKMS_BUILD_ROOT/src"
-CACHE_DIR="$DKMS_BUILD_ROOT/baseline-cache"
+
+# Persistent baseline cache.  dkms copies the registered source tree into a
+# throwaway build/ dir, runs PRE_BUILD there and removes it after install, so a
+# cache written under build/ would silently vanish after every install (and the
+# next offline build would fail).  The registered source tree survives; dkms
+# exposes it as the sibling 'source' symlink
+#   /var/lib/dkms/<pkg>/<ver>/source -> /usr/src/<pkg>-<ver>
+# Prefer that.  When run by hand from /usr/src (no such symlink) fall back to
+# the script's own tree.  DKMS_CACHE_DIR overrides everything.
+if [ -z "${DKMS_CACHE_DIR:-}" ]; then
+  _srclink="$DKMS_BUILD_ROOT/../source"
+  if [ -L "$_srclink" ] && [ -d "$_srclink" ]; then
+    CACHE_DIR="$(cd "$_srclink" && pwd)/baseline-cache"
+  else
+    CACHE_DIR="$DKMS_BUILD_ROOT/baseline-cache"
+  fi
+else
+  CACHE_DIR="$DKMS_CACHE_DIR"
+fi
 
 # --- resolve kernel version -> upstream tag --------------------------------
 # kernelver comes from DKMS as e.g. '7.2.3-1-cachyos' or '7.2.3'.  We only
@@ -66,6 +89,37 @@ UPSTREAM="https://raw.githubusercontent.com/gregkh/linux/${TAG}"
 log() { printf '[prepare] %s\n' "$*"; }
 die()  { printf '[prepare] ERROR: %s\n' "$*" >&2; exit "${2:-1}"; }
 
+# --- helper: download one file, tolerating IPv6-only environments ----------
+# Many hosts resolve raw.githubusercontent.com to IPv6 first, but have no
+# working IPv6 route (TLS connect then fails with "unexpected eof").  Try the
+# system default first, then force IPv4.  Sets $FETCH_RETRY_IPV4=1 when the
+# IPv4 fallback was the one that succeeded.
+# $1 = upstream URL, $2 = destination path
+curl_fetch() {
+  local url="$1" dest="$2"
+  if curl -fsSL --max-time 60 "$url" -o "$dest" 2>/dev/null; then
+    return 0
+  fi
+  if curl -4 -fsSL --max-time 60 "$url" -o "$dest" 2>/dev/null; then
+    FETCH_RETRY_IPV4=1
+    return 0
+  fi
+  return 1
+}
+
+# --- helper: find the closest cached baseline version -----------------------
+# Returns the largest cached version <= $KVER (e.g. 7.2.3 when 7.2.5 is not
+# cached yet), preferring an exact match.  Prints nothing if none exist.
+find_nearest_cache() {
+  local subdir="$1" dest="$2" v best=""
+  for v in $(ls -1 "$CACHE_DIR" 2>/dev/null | sort -V); do
+    [ -s "$CACHE_DIR/$v/$subdir/$dest" ] || continue
+    best="$v"
+    [ "$v" = "$KVER" ] && break
+  done
+  [ -n "$best" ] && printf '%s\n' "$best"
+}
+
 # --- helper: fetch a single baseline file -----------------------------------
 # $1 = subdir in src/ where the file lands
 # $2 = destination file name in that dir
@@ -86,27 +140,53 @@ fetch_baseline() {
       die "cannot write baseline: $SRC_DIR/$subdir does not exist or is not writable by $(id -un) (DKMS builds run as root; running manually? use sudo)"
     fi
     mkdir -p "$SRC_DIR/$subdir"
-    if curl -fsSL --max-time 60 "$UPSTREAM/$upstream_path" -o "$dest_path" 2>/dev/null; then
+    FETCH_RETRY_IPV4=0
+    if curl_fetch "$UPSTREAM/$upstream_path" "$dest_path"; then
       if [ ! -s "$dest_path" ]; then
         die "downloaded $upstream_path is empty; likely a server error for ${TAG}"
       fi
       mkdir -p "$(dirname "$cache_path")"
-      cp -f "$dest_path" "$cache_path" 2>/dev/null || true
-      log "fetched $upstream_path (${TAG}) -> $subdir/$dest"
+      if cp -f "$dest_path" "$cache_path" 2>/dev/null; then
+        :
+      else
+        log "WARNING: could not seed baseline cache at $cache_path (not fatal; offline rebuilds may need network)"
+      fi
+      if [ "$FETCH_RETRY_IPV4" = 1 ]; then
+        log "fetched $upstream_path (${TAG}) via IPv4 fallback -> $subdir/$dest"
+      else
+        log "fetched $upstream_path (${TAG}) -> $subdir/$dest"
+      fi
       return 0
     fi
     if [ ! -w "$SRC_DIR/$subdir" ]; then
       die "online download succeeded but could not write $dest_path (directory $SRC_DIR/$subdir not writable by $(id -un)); run as root or check permissions"
     fi
-    log "online fetch failed for $upstream_path (network or ${TAG} missing upstream); falling back to cache"
+    log "online fetch failed for $upstream_path (network down, IPv6-only route, or ${TAG} missing upstream); falling back to cache"
   fi
 
-  # 2) cache fallback (works offline)
+  # 2) exact-version cache fallback (works offline)
   if [ -s "$cache_path" ]; then
     mkdir -p "$SRC_DIR/$subdir"
     cp -f "$cache_path" "$dest_path"
     log "using cached baseline $subdir/$dest ($KVER)"
     return 0
+  fi
+
+  # 3) nearest older cached version (forward-compatible in practice: the
+  #    baselines are stable across stable point releases).  Enabling this
+  #    avoids having to build once online just to seed a new kernel's cache.
+  #    If the subsequent patch no longer applies, apply_patch() errors out and
+  #    tells you to regenerate it - so this fallback never silently ships a
+  #    wrong driver.
+  if [ -n "$upstream_path" ]; then
+    local near
+    near="$(find_nearest_cache "$subdir" "$dest")"
+    if [ -n "$near" ]; then
+      mkdir -p "$SRC_DIR/$subdir"
+      cp -f "$CACHE_DIR/$near/$subdir/$dest" "$dest_path"
+      log "WARNING: no baseline for ${KVER}; using nearest cached ${near} for $subdir/$dest - verify the patch still applies"
+      return 0
+    fi
   fi
 
   # NOTE: gc5035 is handled separately (vendored baseline), never reaches here.
