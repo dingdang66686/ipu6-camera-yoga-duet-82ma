@@ -7,6 +7,9 @@
 > 上游源代码本身**未做修改**（`ipu6-camera-hal` 保持上游 `6fefa86`）。
 > 让摄像头工作的关键是**配置匹配**，而非源码补丁——这一点是本仓库存在的核心理由。
 
+> 📄 本目录的配置从何而来（尤其是厂商 Windows 驱动逆向出的 PLL/VTS、CCM、GPIO
+> 映射、graph 模板）详见 **[`../docs/WINDOWS-REVERSE-ENGINEERING.md`](../docs/WINDOWS-REVERSE-ENGINEERING.md)**。
+
 ---
 
 ## 1. 硬件与软件环境

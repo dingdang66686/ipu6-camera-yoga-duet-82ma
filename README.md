@@ -74,8 +74,20 @@ ipu6-camera-yoga-duet-82ma/
 │   ├── patches/icamerasrc-ov5678.diff
 │   ├── scripts/{hal,analysis}/   # aiqb 分析、抓帧、画质调校工具
 │   └── README.md                 # HAL 层详细文档（配置改动逐项解释）
+├── docs/
+│   └── WINDOWS-REVERSE-ENGINEERING.md   # ★ Windows 驱动逆向 & 参数提取全过程
 └── README.md         # 本文件
 ```
+
+---
+
+## 详细文档
+
+| 文档 | 内容 |
+|---|---|
+| [`drivers/README.md`](drivers/README.md) | 内核层：5 个 DKMS 模块、构建机制 |
+| [`hal/README.md`](hal/README.md) | 用户态层：HAL 枚举机制、配置改动逐项解释 |
+| **[`docs/WINDOWS-REVERSE-ENGINEERING.md`](docs/WINDOWS-REVERSE-ENGINEERING.md)** | **★ Windows 驱动逆向与参数提取全过程**（含免责声明）：如何从厂商 `.sys`/`.aiqb`/ACPI/graph XML 逆向出 PLL/VTS、CCM、GPIO 映射等"金标准"参数 |
 
 ---
 

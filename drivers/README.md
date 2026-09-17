@@ -2,6 +2,10 @@
 
 本目录是 Yoga Duet 82MA 的 IPU6 相机**内核层** DKMS 包，产出 5 个模块：
 
+> 📄 本目录中 OV5678 的 PLL/VTS 等寄存器值、以及 int3472 的 GPIO 电源映射**从何而来**
+> （厂商 Windows `.sys` 逆向 + ACPI DSDT 解析）详见
+> **[`../docs/WINDOWS-REVERSE-ENGINEERING.md`](../docs/WINDOWS-REVERSE-ENGINEERING.md)**。
+
 | 模块 | 说明 | 来源 |
 |------|------|------|
 | `ov5678` | 前置 5MP RGB-IR 传感器驱动（Windows Hello 用） | vendored（自 in-tree `ov5675` 派生，重命名符号 + OV5678 PLL/VTS + OVTI5678 ACPI match） |
